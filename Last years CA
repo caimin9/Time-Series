@@ -1,0 +1,262 @@
+##############################################################################
+# ST4064 Class Test 2024 (Illustrative Solutions)
+# ------------------------------------------------
+# This script demonstrates how to tackle each of the 10 questions from
+# the past assignment. It covers data loading, visualising, decomposing,
+# ARIMA/VAR modelling, and forecasting. 
+#
+# Notes:
+#   1. Make sure you have "sharedbikes.RData" and "sharedbikes_forecast.RData"
+#      in your working directory or adjust the file paths below as needed.
+#   2. The code is illustrative, meant for learning and revision.
+#   3. If your assignment or exam has slightly different requirements (e.g.
+#      different data structures), adapt accordingly.
+##############################################################################
+
+########################################################################################################
+# Question 1
+########################################################################################################
+
+# Load the data object 'dat' from sharedbikes.RData.
+
+load("sharedbikes.RData")  # Adjust path if necessary
+
+# Check the structure to see if it's as expected:
+str(dat)
+head(dat)
+
+########################################################################################################
+# Question 2
+########################################################################################################
+
+# Make a scatter plot of 'casual' over time ('dteday'), ensuring the
+# x-axis is formatted correctly as a date and adding a LOWESS smoother.
+
+# Convert dteday to class Date if not already:
+dat$dteday <- as.Date(dat$dteday)
+
+# Base R plot:
+plot(
+  dat$dteday, dat$casual,
+  xlab = "Date",
+  ylab = "Number of Casual Hires",
+  main = "Casual Bike Hires Over Time"
+)
+
+# Add a LOWESS smoother (with a chosen span, e.g., f = 0.1):
+lines(
+  lowess(dat$dteday, dat$casual, f = 0.1),
+  col = "red",
+  lwd = 2
+)
+
+########################################################################################################
+# Linear Model Setup
+########################################################################################################
+# The problem statement suggests removing annual (s1, c1, s2, c2)
+# and weekly (s7_1, c7_1, s7_2, c7_2) seasonalities as well as trend (t).
+# We'll use a linear model and then treat the residuals as a time series.
+
+# Fit the linear model:
+mod <- lm(
+  casual ~ t + s1 + c1 + s2 + c2 + s7_1 + c7_1 + s7_2 + c7_2,
+  data = dat
+)
+
+# Convert the residuals into a time series object with daily frequency = 365
+dat$res <- ts(
+  residuals(mod),
+  start = 2018,    # Based on the assignment prompt
+  frequency = 365
+)
+
+########################################################################################################
+# Question 3
+########################################################################################################
+# 3a. Plot the residual series
+plot(dat$res, main = "Residuals of Linear Model (Casual)")
+
+# 3b. Plot the ACF
+acf(dat$res, main = "ACF of Residuals")
+
+# 3c. Plot the PACF
+pacf(dat$res, main = "PACF of Residuals")
+
+########################################################################################################
+# Question 4
+########################################################################################################
+
+# Decompose the residual series into trend, seasonal, and random components.
+# We'll use stl() for decomposition.
+
+res_decomp <- stl(dat$res, s.window = "periodic")
+plot(res_decomp, main = "STL Decomposition of Residuals")
+
+########################################################################################################
+# Question 5
+########################################################################################################
+
+# Decompose the first-order differences of the residual series similarly.
+
+# 1st difference of the residuals
+dres <- diff(dat$res)
+
+# Convert this to a ts object
+dres_ts <- ts(
+  dres,
+  start = (2018 + 1/365),  # shift start by one day if desired
+  frequency = 365
+)
+
+dres_decomp <- stl(dres_ts, s.window = "periodic")
+plot(dres_decomp, main = "STL Decomposition of 1st-Diff Residuals")
+
+########################################################################################################
+# Question 6
+########################################################################################################
+
+# Produce cumulative periodograms of:
+#   a) the residual series
+#   b) the first order differences of the residual series
+
+cpgram(dat$res, main = "Cumulative Periodogram of Residuals")
+cpgram(dres_ts, main = "Cumulative Periodogram of 1st-Diff Residuals")
+
+########################################################################################################
+# Question 7
+########################################################################################################
+
+# Use 'arima0' to fit candidate ARIMA(p, 1, q) models to the residual series.
+# We'll systematically try small p,q, e.g. up to 3, and compare AIC.
+
+best_aic <- Inf
+best_fit <- NULL
+best_p <- NA
+best_q <- NA
+
+for (p in 0:3) {
+  for (q in 0:3) {
+    # Fit ARIMA(p,1,q) with arima0
+    fit <- arima0(dat$res, order = c(p, 1, q))
+    if (fit$aic < best_aic) {
+      best_aic <- fit$aic
+      best_fit <- fit
+      best_p <- p
+      best_q <- q
+    }
+  }
+}
+
+cat("Best ARIMA(p,1,q) by AIC is ARIMA(", best_p, ",1,", best_q, ")\n")
+cat("AIC:", best_aic, "\n")
+
+########################################################################################################
+# Question 8
+########################################################################################################
+
+# Fit that best model using the 'arima' function and plot the 
+# cumulative periodogram of the resulting residuals.
+
+final_fit <- arima(dat$res, order = c(best_p, 1, best_q))
+final_res <- residuals(final_fit)
+
+cpgram(final_res, main = "Cumulative Periodogram of Final ARIMA Residuals")
+
+########################################################################################################
+# Question 9
+########################################################################################################
+
+# Re-plot the 'casual' series plus forecasts for the next 60 days,
+# including a confidence interval.
+#
+# We'll use an additional dataset newdat from 'sharedbikes_forecast.RData'.
+
+load("sharedbikes_forecast.RData")  # Contains newdat
+
+# 9a. Predict from the linear model (trend+seasonality)
+pred_lm <- predict(mod, newdata = newdat, se.fit = TRUE)
+
+# 9b. Forecast from the ARIMA model for the next 60 days
+n_ahead <- 60
+arima_pred <- predict(final_fit, n.ahead = n_ahead)
+
+# 9c. Combine them: overall forecast = linear part + ARIMA residual forecast
+overall_forecast <- pred_lm$fit + arima_pred$pred
+
+# Simple approach to confidence intervals: sum standard errors in quadrature
+upper <- overall_forecast + 1.96 * sqrt(pred_lm$se.fit^2 + arima_pred$se^2)
+lower <- overall_forecast - 1.96 * sqrt(pred_lm$se.fit^2 + arima_pred$se^2)
+
+# 9d. Plot
+plot(
+  dat$dteday, dat$casual,
+  xlab = "Date",
+  ylab = "Casual Bike Hires",
+  xlim = c(min(dat$dteday), max(newdat$dteday)),
+  ylim = range(c(dat$casual, lower, upper)),
+  main = "Casual Hires (Historical + 60-Day Forecast)"
+)
+lines(dat$dteday, dat$casual, lwd = 2)  # historical data line
+
+# Forecast lines
+lines(newdat$dteday, overall_forecast, col = "red", lwd = 2)
+lines(newdat$dteday, upper, col = "blue", lty = 2)
+lines(newdat$dteday, lower, col = "blue", lty = 2)
+
+legend(
+  "topleft",
+  legend = c("Historical", "Forecast", "95% CI"),
+  col = c("black", "red", "blue"),
+  lty = c(1,1,2),
+  bty = "n"
+)
+
+########################################################################################################
+# Question 10
+########################################################################################################
+
+# Investigate the relationship in bike usage between 'casual' and 'registered'.
+# Fit linear model to 'registered' usage, remove annual & weekly effects,
+# then use the residuals to fit a Vector Autoregression (VAR) on the 
+# first differences of each residual series.
+
+# 10a. Linear model for registered usage with the same approach:
+mod1 <- lm(
+  registered ~ t + s1 + c1 + s2 + c2 + s7_1 + c7_1 + s7_2 + c7_2,
+  data = dat
+)
+
+# 10b. Extract residuals and convert to time-series
+dat$res1 <- ts(
+  residuals(mod1),
+  start = 2018,
+  frequency = 365
+)
+
+# 10c. First differences for both sets of residuals
+diff_casual <- diff(dat$res)
+diff_registered <- diff(dat$res1)
+
+# 10d. Fit a VAR using the 'vars' package, choosing the best lag by SC (BIC).
+library(vars)
+
+# Combine into a single matrix or ts object
+diff_data <- cbind(diff_casual, diff_registered)
+
+# Use VARselect to compare models up to a chosen max lag (e.g., 5).
+var_lag_selection <- VARselect(diff_data, lag.max = 5, type = "const")
+var_lag_selection
+
+# Extract the SC-based choice:
+chosen_lag <- var_lag_selection$selection["SC(n)"]
+cat("By the Schwarz Criterion (SC), recommended lag is:", chosen_lag, "\n")
+
+# 10e. Fit the VAR model at the chosen lag
+final_var <- VAR(diff_data, p = chosen_lag, type = "const")
+
+# Check the summary
+summary(final_var)
+
+##############################################################################
+# End of script
+##############################################################################
